@@ -36,9 +36,21 @@ def training(args, layer):
     
     batch_size = 1
     loader = DataLoader(data_list, batch_size=batch_size)
+
+    filename = ['data_posegraph/data/correct_loops/graph_data_before_224_722.msg']
+    test_data_list = []
+    test_edge_list = []
+    for item in filename:
+        data, edge = read_data(item)
+        test_data_list.append(data)
+        test_edge_list.append(edge)
+    
+    batch_size = 1
+    test_loader = DataLoader(test_data_list, batch_size=batch_size)
+
     model = Self_PGO(layer, args).to(device)
     optimizer = optim.AdamW(params=model.parameters(), lr=args.lr, weight_decay= 1e-5)
-    writer = SummaryWriter('./log1')
+    writer = SummaryWriter('./log_teacher_edge_drop')
 
     # Start training
     print("Training Start!")
@@ -46,7 +58,7 @@ def training(args, layer):
     for epoch in range(args.epochs):
         for idx, batch_data in enumerate(loader):
             batch_data.to(device)
-            _, loss = model(x= batch_data.x, edge_index = batch_data.edge_index, edges = edge_list[idx], edge_weight = batch_data.edge_attr)
+            _, loss = model(x= batch_data.x, edge_index = batch_data.edge_index, edges = edge_list[idx], edge_weight = batch_data.edge_attr, epoch = epoch)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -57,8 +69,8 @@ def training(args, layer):
         
         if (epoch) % 5 == 0:
             MSE_error = 0
-            for idx, batch_data in enumerate(loader):
-                data, _ = model(x= batch_data.x, edge_index = batch_data.edge_index, edges = edge_list[idx], edge_weight = batch_data.edge_attr)
+            for idx, batch_data in enumerate(test_loader):
+                data, _ = model(x= batch_data.x, edge_index = batch_data.edge_index, edges = test_edge_list[idx], edge_weight = batch_data.edge_attr)
                 loss = nn.MSELoss()
                 MSE_error += loss(data, batch_data.y)
             print("The current epoch is: ", epoch, " and evaluate loss: ", MSE_error.item())
@@ -113,8 +125,8 @@ class Encoder(nn.Module):
 
     def forward(self, x, edge_index, edge_weight=None):
         for i, gnn in enumerate(self.stacked_gnn):
-            edge_index, _ = dropout_edge(edge_index, p = 0.1)
-          #  edge_index, edge_weight = self.edge_drop[i](x, edge_index, edge_weight)
+          #  edge_index, _ = dropout_edge(edge_index, p = 0.1)
+            edge_index, edge_weight = self.edge_drop[i](x, edge_index, edge_weight)
             x = gnn(x, edge_index, edge_weight=None)
             x = self.stacked_prelus[i](x)
 
@@ -146,15 +158,17 @@ class Self_PGO(torch.nn.Module):
     def forward(self, x, edge_index, edges, edge_weight=None, epoch=None):
         time1 = time.perf_counter()
         student = self.student_encoder(x=x, edge_index=edge_index, edge_weight=edge_weight)
+    
         pred = self.student_predictor(student)
         time2 = time.perf_counter()
         print("The inference time: ", time2 - time1)
         
-        '''
-        with torch.no_grad():
-            teacher = self.teacher_encoder(x=x, edge_index=edge_index, edge_weight=edge_weight)
-        '''
-        teacher = x
+        if epoch is not None and epoch >= 100:
+            with torch.no_grad():
+                teacher = self.teacher_encoder(x=x, edge_index=edge_index, edge_weight=edge_weight)
+        else:
+            teacher = x
+        
         
         target = class_PGO(teacher, edges)
 
