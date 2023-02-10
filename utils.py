@@ -65,7 +65,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")    
     parser.add_argument("--es", type=int, default=3000, help="Early Stopping Criterion")
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--epochs", type=int, default=500)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--dropout", type=float, default=0.0)
 
     return parser.parse_known_args()

@@ -8,13 +8,15 @@ from torch_geometric.nn import GCNConv
 from torch.nn import Sequential as Seq, Linear, ReLU
 from torch_geometric.utils import dropout_edge, to_dense_adj, from_scipy_sparse_matrix
 import copy
-from utils import set_requires_grad, EMA, update_moving_average, init_weights, Namespace, parse_args
-from classic_pgo import class_PGO
-from data import read_data
+from utils import set_requires_grad, EMA, update_moving_average, init_weights, Namespace, parse_args, repeat_1d_tensor
+from pose_utils import class_PGO
+from data import read_data, read_data_noisy, read_data_edge_attributes
 from torch_geometric.loader import DataLoader
 from torch.nn.functional import normalize
 import time
 from datetime import datetime
+import faiss
+import numpy as np
 from tensorboardX import SummaryWriter
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -23,27 +25,37 @@ def currentTime():
 
 def training(args, layer):
     # Read the training data
-    filename = ['data_posegraph/data/wrong_loops/graph_data_before_91_646.msg', 
+    data_dir = "./photo_tourism_posegraph/"
+    filelist = ["Alamo", "Ellis_Island", "Gendarmenmarkt", "Madrid_Metropolis", "Montreal_Notre_Dame",
+"NYC_Library", "Piazza_del_Popolo", "Piccadilly", "Roman_Forum", "Tower_of_London", "Trafalgar", "Union_Square", "Vienna_Cathedral", "Yorkminster"]
+    filename = [data_dir + name + ".msg" for name in filelist]
+
+    '''
+    filename = [
+        'data_posegraph/data/correct_loops/graph_data_before_224_722.msg',
         'data_posegraph/data/wrong_loops/graph_data_before_229_823.msg', 
         'data_posegraph/data/wrong_loops/graph_data_before_245_562.msg',
         'data_posegraph/data/wrong_loops/graph_data_before_276_910.msg']
+    '''
     data_list = []
     edge_list = []
     for item in filename:
-        data, edge = read_data(item)
+        data, edge = read_data_edge_attributes(item)
         data_list.append(data)
         edge_list.append(edge)
     
+
     batch_size = 1
     loader = DataLoader(data_list, batch_size=batch_size)
 
-    filename = ['data_posegraph/data/correct_loops/graph_data_before_224_722.msg']
+    filename = ['data_posegraph/data/wrong_loops/graph_data_before_91_646.msg' ]
     test_data_list = []
     test_edge_list = []
     for item in filename:
         data, edge = read_data(item)
         test_data_list.append(data)
         test_edge_list.append(edge)
+    
     
     batch_size = 1
     test_loader = DataLoader(test_data_list, batch_size=batch_size)
@@ -69,26 +81,28 @@ def training(args, layer):
         
         if (epoch) % 5 == 0:
             MSE_error = 0
+            model.eval()
             for idx, batch_data in enumerate(test_loader):
                 data, _ = model(x= batch_data.x, edge_index = batch_data.edge_index, edges = test_edge_list[idx], edge_weight = batch_data.edge_attr)
                 loss = nn.MSELoss()
                 MSE_error += loss(data, batch_data.y)
             print("The current epoch is: ", epoch, " and evaluate loss: ", MSE_error.item())
             writer.add_scalar("Evaluate Loss", MSE_error.item(), epoch)
+            model.train()
     writer.close()
     print("\nTraining Done!")
 
 
 
 class Edgedropping(nn.Module):
-    def __init__(self, tau = 0.05):
+    def __init__(self, tau = 0.1):
         super(Edgedropping, self).__init__()
         in_channels = 14
         middle_channels = 7
         out_channels = 1
         self.tau = tau
-        self.a = -0.1
-        self.b = 1.1
+        self.a = -1e-6
+        self.b = 1
         self.random = torch.rand(1)
         self.random = torch.log(self.random).to(device) - torch.log(1 - self.random).to(device)
         self.mlp_weight = Linear(14, in_channels)
@@ -102,10 +116,10 @@ class Edgedropping(nn.Module):
     def forward(self, x, edge_index, edge_weight = None):
         temp = edge_weight
         edge_weight = self.mlp(edge_weight.reshape(-1,14))
-        edge_weight = self.sigmoid((self.random + edge_weight)/self.tau)
+        edge_weight = torch.sigmoid((self.random + edge_weight)/self.tau)
         edge_weight = edge_weight.reshape(-1,)
-        v_min, v_max = edge_weight.min(), edge_weight.max()
-        edge_weight = (edge_weight - v_min)/(v_max - v_min)*(self.b - self.a) + self.a
+        #v_min, v_max = edge_weight.min(), edge_weight.max()
+        edge_weight = edge_weight*(self.b - self.a) + self.a
 
         edge_mask = edge_weight > 0
         edge_weight = temp[:, edge_mask]
@@ -141,11 +155,13 @@ class Self_PGO(torch.nn.Module):
         set_requires_grad(self.teacher_encoder, False)
         self.teacher_ema_updater = EMA(args.mad, args.epochs)
 
-
+        self.evaluate = False
         rep_dim = layer_config[-1]
         self.student_predictor = nn.Sequential(nn.Linear(rep_dim, args.pred_hid), nn.BatchNorm1d(args.pred_hid), nn.PReLU(), nn.Linear(args.pred_hid, rep_dim))
         self.student_predictor.apply(init_weights)
 
+    def evaluate_on(self):
+        self.evaluate = True
 
     def reset_moving_average(self):
         del self.teacher_encoder
@@ -163,7 +179,7 @@ class Self_PGO(torch.nn.Module):
         time2 = time.perf_counter()
         print("The inference time: ", time2 - time1)
         
-        if epoch is not None and epoch >= 100:
+        if epoch is not None and epoch >= 1000:
             with torch.no_grad():
                 teacher = self.teacher_encoder(x=x, edge_index=edge_index, edge_weight=edge_weight)
         else:
@@ -174,8 +190,7 @@ class Self_PGO(torch.nn.Module):
 
         loss = nn.MSELoss()
 
-        return pred, loss(pred, torch.tensor(target, dtype=torch.float).to(device))
-
+        return pred, loss(pred, torch.tensor(target, dtype=torch.float).to(device)) #+ loss(teacher, student)
 
 
 
