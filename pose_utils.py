@@ -5,6 +5,10 @@ import time
 import torch
 import random
 from math import radians
+import theseus as th
+from typing import List, Optional, Tuple, Union, cast
+import theseus.utils.examples as theg
+import torch.nn as nn
 class PoseGraphOptimization(g2o.SparseOptimizer):
     def __init__(self):
         super().__init__()
@@ -43,8 +47,8 @@ class PoseGraphOptimization(g2o.SparseOptimizer):
                 edge.vertex(1).estimate())
             '''
         else:
-            rot = g2o.Quaternion(np.array(measurement[0:4], dtype=np.float64))
-            t = g2o.Isometry3d(rot, measurement[4:7])
+            rot = g2o.Quaternion(np.array(measurement[3:], dtype=np.float64))
+            t = g2o.Isometry3d(rot, measurement[0:3])
             measurement = t
             
 
@@ -62,26 +66,31 @@ def class_PGO(node_features, edges, edges_attributes = None):
     optimizer = PoseGraphOptimization()
     node_features = node_features
     for i, item in enumerate(node_features):
-        quat = g2o.Quaternion(np.array(item[0:4], dtype=np.float64))
-        t = g2o.Isometry3d(quat, item[4:7])
+        quat = g2o.Quaternion(np.array(item[3:], dtype=np.float64))
+        t = g2o.Isometry3d(quat, item[0:3])
         optimizer.add_vertex(id = i, pose = t)
     
+    for item in edges:
+        optimizer.add_edge(item, None)
+    '''
     for item, relative_measurement in zip(edges, edges_attributes):
         if edges_attributes is None:
             optimizer.add_edge(item, None)
         else:
             optimizer.add_edge(item, relative_measurement)
-    
+    '''
+
     time1 = time.perf_counter()
     optimizer.optimize()
     time2 = time.perf_counter()
     print("The optimizer time is:", time2 - time1)
+    optimizer.save('result.g2o')
     result_dict = []
     for i in range(len(node_features)):
         temp = rotationMatrixToQuaternion1(optimizer.get_pose(i).R)
         temp  = Quaternion(temp).normalised
         t = optimizer.get_pose(i).t
-        result_dict.append(temp.elements.tolist() + list(t))
+        result_dict.append(list(t) + temp.elements.tolist() )
     #might cause problems need to define a loss function
     return result_dict
 
@@ -188,7 +197,98 @@ def quaternion_to_rotation_matrix(quaternion: torch.Tensor) -> torch.Tensor:
     return matrix
 
 
+class PoseGraphEdge:
+    def __init__(
+        self,
+        i: int,
+        j: int,
+        relative_pose: Union[th.SE2, th.SE3],
+        weight: Optional[th.DiagonalCostWeight] = None,
+    ):
+        self.i = i
+        self.j = j
+        self.relative_pose = relative_pose
+        self.weight = weight
 
+    def to(self, *args, **kwargs):
+        self.weight.to(*args, **kwargs)
+        self.relative_pose.to(*args, **kwargs)
+
+
+
+
+def differentiable_PGO(node_features, edges, edges_attributes = None):
+    vectice_features = torch.tensor(node_features)
+    '''
+    trans = vectice_features[:,4:]
+    rots = vectice_features[:,0:4]
+    vectice_features = torch.cat((trans, rots), dim=1)
+    '''
+    vectices = []
+    for i in range(vectice_features.shape[0]):
+        x_y_z_quat = vectice_features[i, :].to(torch.float64)
+        vectices.append(th.SE3(x_y_z_quat, name="VERTEX_SE3__{}".format(i)))
+
+    weight = th.Variable(torch.tensor([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]]).to(torch.float64))
+    objective = th.Objective()
+    objective.to(torch.float64)
+    for i, item in enumerate(edges):
+        Rij = torch.tensor(edges_attributes[i]).to(torch.float64)
+        '''
+        Rij_quat = Rij[:4]
+        Rij_xyz = Rij[4:]
+        Rij = torch.cat((Rij_xyz, Rij_quat))
+        '''
+        relative_pose = th.SE3(x_y_z_quaternion=Rij, name="EDGE_SE3__{}".format(i))
+        cost_func = th.Between(
+            vectices[item[0]],
+            vectices[item[1]],
+            relative_pose,
+            th.DiagonalCostWeight(weight),
+        )
+        objective.add(cost_func)
+    
+    
+    pose_prior = th.Difference(
+        var=vectices[0],
+        cost_weight=th.ScaleCostWeight(torch.tensor(1e-6, dtype=torch.float64)),
+        target=vectices[0].copy(new_name=vectices[0].name + "PRIOR"),
+    )
+
+    objective.add(pose_prior)
+    
+
+    optimizer = th.GaussNewton(
+        objective,
+        max_iterations=10,
+        step_size=0.5,
+        linearization_cls=th.SparseLinearization,
+        linear_solver_cls=th.CholmodSparseSolver,
+        vectorize=True,
+    )
+
+    inputs = {var.name: var.tensor for var in vectices}
+    theseus_optim = th.TheseusLayer(optimizer)
+    theseus_optim.forward(inputs)
+
+    
+
+    loss = nn.MSELoss()
+    updated_node_features = []
+    for key in inputs:
+        rot = inputs[key][:, :, :3].reshape(3,3).numpy()
+        t = inputs[key][:,:,3]
+        t = np.reshape(t, (3,))
+        q2 = Quaternion(matrix = rot, atol=1e-05, rtol=1e-05).normalised
+        updated_node_features.append(t.tolist() + q2.elements.tolist())
+  
+
+    print("The MSE between noised data after Diff-LM and true data is: ", 
+          loss(torch.tensor(node_features), torch.tensor(updated_node_features)).item())
+
+
+    return None
+    
 
 
 

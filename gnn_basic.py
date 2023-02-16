@@ -25,18 +25,25 @@ def currentTime():
 
 def training(args, layer):
     # Read the training data
+    '''
     data_dir = "./photo_tourism_posegraph/"
     filelist = ["Alamo", "Ellis_Island", "Gendarmenmarkt", "Madrid_Metropolis", "Montreal_Notre_Dame",
 "NYC_Library", "Piazza_del_Popolo", "Piccadilly", "Roman_Forum", "Tower_of_London", "Trafalgar", "Union_Square", "Vienna_Cathedral", "Yorkminster"]
     filename = [data_dir + name + ".msg" for name in filelist]
-
     '''
+    
+    # Treat before and after as different graph that may cause problems
     filename = [
-        'data_posegraph/data/correct_loops/graph_data_before_224_722.msg',
         'data_posegraph/data/wrong_loops/graph_data_before_229_823.msg', 
         'data_posegraph/data/wrong_loops/graph_data_before_245_562.msg',
-        'data_posegraph/data/wrong_loops/graph_data_before_276_910.msg']
-    '''
+        'data_posegraph/data/wrong_loops/graph_data_before_276_910.msg',
+        'data_posegraph/data/wrong_loops/graph_data_after_91_646.msg',
+        'data_posegraph/data/wrong_loops/graph_data_after_91_646.msg',
+        'data_posegraph/data/wrong_loops/graph_data_after_229_823.msg',
+        'data_posegraph/data/wrong_loops/graph_data_after_245_562.msg',
+        'data_posegraph/data/wrong_loops/graph_data_after_276_910.msg'
+        ]
+    
     data_list = []
     edge_list = []
     for item in filename:
@@ -48,7 +55,8 @@ def training(args, layer):
     batch_size = 1
     loader = DataLoader(data_list, batch_size=batch_size)
 
-    filename = ['data_posegraph/data/wrong_loops/graph_data_before_91_646.msg' ]
+    filename = ['data_posegraph/data/correct_loops/graph_data_before_224_722.msg',
+                'data_posegraph/data/correct_loops/graph_data_before_224_722.msg']
     test_data_list = []
     test_edge_list = []
     for item in filename:
